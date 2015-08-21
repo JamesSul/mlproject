@@ -1,0 +1,124 @@
+---
+title: "ML Course Project"
+output: html_document
+---
+
+## Summary
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, we use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).
+
+In this analysis, we use the following prediction algorithms from the `caret` package:
+
+* classification tree
+* random forest with PCA used for variable reduction
+* random forest with 10-fold cross-validation without PCA
+
+We expect the out of sample error to decrease significanly moving from classification tree to random forest and suspect that there might be a minor decrease in out of sample error moving from PCA to 10-fold cross validation without PCA. The last model tested is indeed the most accurate with accuracy of 0.9943 (out of sample error of 0.0057). We then make predictions for twenty test cases.
+
+See the [github repo](https://github.com/JamesSul/mlproject) for additional code.
+
+## Library and data load
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(caret)
+library(dplyr)
+library(randomForest)
+library(rattle)
+library(rpart)
+set.seed(1234)
+# loading (change to url file load for project)
+# note #DIV/0! is an NA String in the set.
+lifts <- read.csv("./data/pml-training.csv", na.strings=c("NA","#DIV/0!", ""))
+test <- read.csv("./data/pml-testing.csv", na.strings=c("NA","#DIV/0!", ""))
+```
+
+## Data cleansing
+
+After examining the data, we noticed several columns with high amounts of `NA` values. After reading [this post in the Coursera class discussions](https://class.coursera.org/predmachlearn-031/forum/thread?thread_id=97) we decided to take the community TA's suggestion for setting a threshold of 0.95 for dropping high-NA columns. We also eliminate near-zero-variability columns.
+
+Eyeballing the remaining data, we notice there are some columns that do not contain accelerometer data and no predictive value, therefore, we drop:
+
+* col1: X - is the row number
+* col2: user_name, self explanatory
+* col3-5: form parts of a timestamp
+* col6: num_window - there was no description of this variable but it appears to increase with rownum and offer no predictive ability as it doesn't appear to contain accelerometer data.
+
+```{r}
+threshold <- 0.95 * nrow(lifts)
+keep <- colnames(lifts[,colSums(is.na(lifts)) <= threshold])
+lifts <- lifts %>% select(one_of(keep))
+nzv <- nearZeroVar(lifts, saveMetrics = TRUE)
+keep <- rownames(nzv[nzv$nzv == FALSE,])
+lifts <- lifts %>% select(one_of(keep))
+lifts <- lifts %>% select(7:59)
+```
+
+## Training and test set creation
+
+Arbitrarily, we chose a 75%/25% split for training/test set creation.
+
+```{r}
+inTrain <- createDataPartition(y=lifts$classe, p=0.75, list=FALSE)
+training <- lifts[inTrain,]
+testing <- lifts[-inTrain,]
+```
+
+
+## Model 1 - Classification Tree
+
+The classification tree accuracy is fairly low (0.4953) as you can see from the confusion matrix. We also include a plot to show the tree.
+
+```{r, cache=TRUE}
+modelFit1 <- train(training$classe ~ ., method="rpart", data=training)
+confusionMatrix(testing$classe, predict(modelFit1, testing))
+```
+
+```{r, echo=FALSE}
+fancyRpartPlot(modelFit1$finalModel)
+```
+
+## Predictor correlation evaluation
+
+We notice that several of the predictor variables are highly correlated suggesting that me might want to preprocess a model with principal components analysis for variable reduction.
+
+```{r}
+# note the classe is the last column
+M <- abs(cor(training[,-53]))
+diag(M) <- 0
+which(M > 0.8, arr.ind=T)
+```
+
+## Model 2 - Random forest with principal components
+
+Model two supports the lecture that asserted that random forest was typically a higher accuracy algorithm. We can see from our output that the accuracy level of 0.978 is quite high.
+
+```{r, cache=TRUE, warning=FALSE}
+modelFit2 <- train(training$classe ~ ., method="rf", preProcess="pca", data=training, allowParallel = TRUE)
+confusionMatrix(testing$classe, predict(modelFit2, testing))
+```
+
+## Model 3 - Random forest with 10-fold cross validation without PCA
+
+Finally, we see that PCA preprocessing contributes to a slight loss of accuracy (from 0.978 to 0.9943). I also decreased to a 10-fold cross validated model from the default of 25 to save processing time (these were taking forever to run).
+
+```{r, cache = TRUE, warning=FALSE}
+modelFit3 <- train(training$classe ~ ., method="rf", data=training, allowParallel = TRUE,
+                   trControl = trainControl(method = "cv", number = 10))
+confusionMatrix(testing$classe, predict(modelFit3, testing))
+```
+
+Model 3 was chosen as our final model since it had the lowest out of sample error. A chart of variable importance for prediction (most to least) is shown below.
+
+```{r, echo=FALSE}
+varImpPlot(modelFit3$finalModel, sort=TRUE, main="Variable Importance: Final Model")
+```
+
+## Prediction - test cases
+
+Finally, we use model 3 to predict our 20 test cases.
+
+```{r}
+pred_test <- predict(modelFit3, test)
+pred_test
+```
+
